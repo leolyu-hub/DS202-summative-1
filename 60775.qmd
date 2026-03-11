@@ -1,6 +1,6 @@
 ---
-title: "✏️ W08 Summative"
-author: "60775"
+title: "✏️ W08 Summative - Predicting Gold Return and Sovereign Credit Ratings"
+author: "Leo Lyu"
 format: html
 self-contained: true
 jupyter: python3
