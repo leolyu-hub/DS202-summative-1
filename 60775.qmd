@@ -1,0 +1,907 @@
+---
+title: "✏️ W08 Summative"
+author: "60775"
+format: html
+self-contained: true
+jupyter: python3
+engine: jupyter
+editor:
+  render-on-save: true
+  preview: true
+---
+
+# Part 1: Predicting Next-Month Gold Returns
+
+#### Introduction: 
+
+In this part, I will build a lnear regression model compared with an alternative linera regression model to predict next-month gold returns using macro-financial indicators. This is because the dataset we use is majorly measured as continous, numerical data.
+
+## 1.1 Importing Libraries and Dataset
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+import statsmodels.api as sm
+```
+
+## 1.2  Load and inspect the Dataset
+```{python}
+
+df = pd.read_csv("/Users/leolyu/Desktop/大三/DS202/Summative 1/Raw data/gold_price_prediction_dataset.csv")
+
+nfci = pd.read_csv("/Users/leolyu/Desktop/大三/DS202/Summative 1/Raw data/nfci-data-series-csv.csv")
+
+# Check the shape of the dataset
+print(f"Dataset shape: {df.shape}")
+print(f"NFCI dataset shape: {nfci.shape}")
+# Check the first few rows of the dataset
+df.head()
+nfci.head()
+```
+
+
+## 1.3.1 Target Variable Construction
+
+```{python}
+# Create the variable 'gold_return' as the percentage change in gold price from the previous month
+df['gold_return'] = 100 * (df['gold_price'] - df['gold_price'].shift(1)) / df['gold_price'].shift(1)
+
+#Then create the target variable indicating the gold price in next month
+df['gold_target'] = df['gold_return'].shift(-1)
+
+#Visually verify the gold_return and gold_target is correcttly added to the dataframe
+print(df.head())
+```
+
+## 1.3.2 Real Yield Construction
+```{python}
+# Create the variable 'real_yield' as the difference between the 10-year US Treasury yield and the US inflation rate
+df['real_yield'] = df['us_10y_yield'] - df['us_10y_breakeven_inflation'] 
+```
+
+The real yield is an important factor in gold price prediction because higher real yields can make bonds more attractive than gold, which does not pay interest. This can lead to a decrease in demand for gold and thus lower gold prices. Conversely, lower real yields can make gold more attractive as an investment, potentially driving up its price. 
+
+
+## 1.3.3 Integrate Financial Conditions
+```{python}
+# Converts the string dates into datetime objects
+nfci['Friday_of_Week'] = pd.to_datetime(nfci['Friday_of_Week'])
+
+# Extract just the year-month 
+nfci['month'] = nfci['Friday_of_Week'].dt.to_period('M')
+
+# Aggregate using the mean value for each month
+nfci_monthly = nfci.groupby('month')['NFCI'].mean().reset_index()
+```
+
+ Taking average is a conventional method for aggregation that provides a central tendency of the data.
+
+```{python}
+ # Convert df's date column to the same month-year format
+df['month'] = pd.to_datetime(df['date']).dt.to_period('M')
+
+# Merge the two dataframes on the month column
+df = pd.merge(df, nfci_monthly, on='month', how='left')
+```
+
+We use a left merge to ensure we won't accidentally lose rows from the main df dataset. 
+
+## 1.3.4 Dataset Assessment
+
+```{python}
+# Check the time coverage and missingness
+print(df['date'].min())   # start of time coverage
+print(df['date'].max())   # end of time coverage
+print(df.isnull().sum())  # missing values per column
+df.info()          # overall dataset summary
+```
+
+Key observations:
+
+- All predictors are numerical, which means no encoding is needed.
+- The outcome variable is continuous, which is suitable for linear regression.
+- The missing values are distributed unevenly across columns. This suggests that the missing data may not be completely random and may require explicit handling.
+
+```{python}
+df[df['usd_broad_index'].isna()][['date', 'usd_broad_index']]
+```
+```{python}
+df[df['msci_world'].isna()][['date', 'msci_world']]
+```
+```{python}
+df[df['euro_area_inflation_expectations'].isna()][['date', 'euro_area_inflation_expectations']]
+```
+```{python}
+df[df['msci_emerging_markets'].isna()][['date', 'msci_emerging_markets']]
+```
+
+
+All missing data in 'usd_broad_index', 'msci_world', 'euro_area_inflation_expectations' and 'msci_emerging_markets' are clsutered at the beginning of the sample (2003-2004). This suggests this missing data is not random, likely due to data availability issues. 
+For modelling, I will drop the early rows with missing data since they only account for a small portion of the sample and imputation may introduce bias. 
+
+## 1.4 Data Exploration
+### Plotting the evolution of gold price over time
+```{python}
+df['date'] = pd.to_datetime(df['date'])
+plt.figure(figsize=(12, 5))
+plt.plot(df['date'], df['gold_price'])
+plt.title('Gold Price Over Time')
+plt.xlabel('Date')
+plt.ylabel('Gold Price (USD)')
+plt.xticks(rotation=45)
+plt.show()
+```
+After the 2008 financial crisis, central banks (especially the US Fed) kept interest rates very low and launched quantitative easing. This led to an increase in gold prices since investor want to hedge potential inflation. In 2020, the COVID-19 pandemic caused a global economic downturn, leading to increased demand for gold as a safe-haven asset, which drove up its price.
+
+### Plotting trend of monthly gold returns
+```{python}
+plt.figure(figsize=(12, 5))
+plt.plot(df['date'], df['gold_return'])
+plt.title('Gold Return Over Time')
+plt.xlabel('Date')
+plt.ylabel('Gold Return (%)')
+plt.xticks(rotation=45)
+plt.show()
+```
+
+Returns typically range between -10% and +15%, with some extreme values during periods of high volatility (e.g., 2008 financial crisis, 2020 COVID-19 pandemic). In general, volatility seems relatively consistent throughout the sample period, with no clear trend of increasing or decreasing volatility over time. This suggests that the risk associated with gold investments has remained relatively stable over the years.
+
+### Identifying the top 5 months with the highest gold returns
+```{python}
+df['abs_return'] = df['gold_return'].abs()
+df[['date', 'gold_return', 'abs_return']].nlargest(5, 'abs_return')
+```
+
+We can see that the top 5 months with the highest absolute gold returns are clustered around major economic events, such as the 2008 financial crisis and the 2011 European debt crisis. People sold gold in October 2008 to raise cash to cover margin calls, which led to sharp decline in gold price. Then it bounced back due to it's safe-heaven propoerty. As a highly liquid assest, gold can experience significant price swings during periods of market stress, as investors rapidly adjust their positions in response to changing economic conditions. 
+
+```{python}
+df = df.drop(columns=['abs_return'])
+```
+
+### Correlation analysis between gold returns and predictors
+```{python}
+cols = ['gold_target', 'real_yield', 'NFCI', 'usd_broad_index', 'brent_price', 'MOVE_index', 'msci_world','sp_gsci', 'commodity_equity_volatility','us_inflation_expectations', 'euro_area_inflation_expectations', 'world_trade_volume', 'world_industrial_production', 'gscpi']
+df[cols].corr()
+
+#Visulisation
+corr_matrix = df[cols].corr()
+
+plt.figure(figsize=(8, 6))
+sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt='.2f')
+plt.title('Correlation Matrix: Gold Return and Selected Predictors')
+plt.show()
+```
+
+All correlations with gold_target are relatively weak (all below 0.25), suggesting gold returns are difficult to predict from these indicators alone. We need to consider the inteactive effect between those index to give a complex relationship between gold return and all other predictors. Notably, the real_yield has the highest correlation (0.23), which is consistent with economic theory that lower real yields can make gold more attractive as an investment, potentially driving up its price. What's more, usd_board_index, msci_world,  world_trade_volume and world_industrial_production are highly correlated with each other (>=0.8). This  may lead to multicollinearity issues, which can make it difficult to interpret the coefficients and reduce the regression model's predictive power. Similarly, NFCI and the MOVE index show a strong positive correlation, reflecting that both measure financial market stress. Therefore, we may need to select a subset of these variables for our regression analysis.
+
+### Multi-variable visualisation
+```{python}
+plt.figure(figsize=(10, 6))
+sns.scatterplot(data=df, 
+                x='real_yield', 
+                y='gold_target', 
+                hue='NFCI',
+                palette='coolwarm')
+plt.title('Next-Month Gold Returns vs Real Yield, coloured by NFCI')
+plt.xlabel('Real Yield (%)')
+plt.ylabel('Next-Month Gold Return (%)')
+plt.axhline(0, color='black', linestyle='--', linewidth=0.8)  # zero return line
+plt.show()
+```
+The scatter plot shows a weak positive relationship between real yield and next-month gold returns, which is consistent with the correlation analysis. The color gradient indicates that higher NFCI values (indicating tighter financial conditions) are mixed across the range of real yields, suggesting that NFCI may not have a strong direct relationship with gold returns. However, there may be some interaction effect between real yield and NFCI that could be explored in a regression model. Because we could see the clustering of high NFCI at higher real yields, which may suggest that the effect of real yield on gold returns could be different under different financial conditions. This align the story we concluded in acute 2008 financial stress, gold can go either way depending on whether investors are using it as a safe haven or selling it for liquidity.
+
+## 1.5 Modelling 
+### 1.5.1 Train/Test Split
+```{python}
+#Drop rows with missing values in modelling columns
+df['gold_return_lag1'] = df['gold_return'].shift(1) # For later 1.5.3 alternative model
+df = df.dropna(subset=['real_yield', 'NFCI', 'usd_broad_index', 
+                        'gold_target', 'gold_return_lag1'])
+
+# To prevent data leakage, for time series forecasting, the split must always be chronological. Given the dataset runs from 2006 to 2026 (after dropping the early missing rows), we can use the first 80% of the cleaned data for training and the last 20% for testing. It means we will train the model on data from 2006 to around 2021, and test it on data from 2022 to 2026.
+
+train = df[df['date'] < '2022-01']
+test = df[df['date'] >= '2022-01']
+print(train.shape)
+print(test.shape)
+print(train['date'].max())  # should be end of 2021
+print(test['date'].min())   # should be start of 2022
+```
+
+### 1.5.2 Baseline Model
+
+#### Feature Selection
+Real yield, NFCI and usd_broad_index are selected as predictors for the baseline model because they have the relative highest correlation with gold returns among all predictors and each represent different channels into analysing gold return. There is a theortical motivation that real yield is a key economic indicator that directly affects the opportunity cost of holding gold, while NFCI captures overall financial conditions that can influence investor behavior towards gold. The usd_broad_index reflects the strength of the US dollar, which often has an inverse relationship with gold prices since gold is priced in dollars.
+
+The baseline linear regression model is specified as:
+
+$$\hat{r}_{t+1} = \beta_0 + \beta_1 \cdot \text{RealYield}_t + \beta_2 \cdot \text{NFCI}_t + \beta_3 \cdot \text{USD}_t + \epsilon_t$$
+
+Where:
+
+$\hat{r}_{t+1}$​ = predicted next-month gold return
+
+$\epsilon_t$​ = error term
+
+```{python}
+features = ['real_yield', 'NFCI', 'usd_broad_index']
+
+X_train = train[features]
+y_train = train['gold_target']
+
+X_test = test[features]
+y_test = test['gold_target']
+
+model = LinearRegression()
+model.fit(X_train, y_train)
+
+coefficients = pd.DataFrame({
+    'Feature': features,
+    'Coefficient': model.coef_
+})
+print(f'Intercept: {model.intercept_:.4f}')
+print(coefficients)
+
+# Model performance evaluation
+y_pred = model.predict(X_test)
+
+r2 = r2_score(y_test, y_pred)
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+mae = mean_absolute_error(y_test, y_pred)
+
+print(f'R²: {r2:.4f}')
+print(f'RMSE: {rmse:.4f}')
+print(f'MAE: {mae:.4f}')
+```
+
+#### Interpretation
+The baseline linear regression model shows that real yield has a positive coefficient ($\beta_1$ = 1.082), suggesting that higher real yields are associated with higher next-month gold returns, which is inconsistent with economic theory. Possible explanations for this could be that the weak correlation between real yield and gold returns in the data may lead to an unstable coefficient estimate, or there may be confounding factors that are not included in the model.
+
+The coefficients for NFCI and usd_broad_index are relatively small ($\beta_2$ = 0.446, $\beta_3$ = 0.059), indicating a weaker relationship with gold returns. The R² value is quite low (R² = 0.061), suggesting that the model explains only a small portion of the variance in gold returns, which is not surprising given the complexity of influecning factors and the unpredictable nature of gold proces. The RMSE (RMSE = 3.839) and MAE (MAE = 3.319) indicate the average magnitude of prediction errors, but without a benchmark, it's hard to interpret their significance. Overall, while the model provides some insights into the relationship between predictors and gold returns, its predictive power is limited, and further model refinement may be necessary.
+
+#### Visualize the predicted vs actual gold returns
+```{python}
+plt.figure(figsize=(12, 5))
+plt.plot(test['date'], y_test.values, label='Actual', color='blue')
+plt.plot(test['date'], y_pred, label='Predicted', color='red', linestyle='--')
+plt.title('Baseline Model: Actual vs Predicted Gold Returns')
+plt.xlabel('Date')
+plt.ylabel('Gold Return (%)')
+plt.legend()
+plt.xticks(rotation=45)
+plt.show()
+```
+The predicted line is essentially flat, hovering around 2-4% while the actual returns swing wildly between -5% and +10%. This visually confirms the poor R² — the model can't capture the volatility of gold returns at all.
+
+### 1.5.3 Alternative Models with lag features
+
+To improve the model, I will add lag features of the target variable (gold returns) to capture the autocorrelation in gold returns.
+
+This is because when forecasting the future values of a gold return, the past values of that same variable are likely to be predictive.
+
+The alternative model is specified as:
+$$\hat{r}_{t+1} = \beta_0 + \beta_1 \cdot \text{RealYield}_t + \beta_2 \cdot \text{NFCI}_t + \beta_3 \cdot \text{USD}_t + \beta_4 \cdot r_t + \epsilon_t$$
+
+Where:
+
+$\hat{r}_{t+1}$​ = predicted next-month gold return
+
+$r_t$​ = current month's gold return (the lag feature)
+
+$\epsilon_t$ = error term
+
+```{python}
+# Since we have already created the lag feature 'gold_return_lag1' and done the train/test split, we can now directly include it in the feature set for the alternative model.
+features_alt = ['real_yield', 'NFCI', 'usd_broad_index', 'gold_return_lag1']
+
+X_train_alt = train[features_alt]
+X_test_alt = test[features_alt]
+
+# Fit the alternative model
+model_alt = LinearRegression()
+model_alt.fit(X_train_alt, y_train)
+
+y_pred_alt = model_alt.predict(X_test_alt)
+
+# Evaluation
+coefficients_alt = pd.DataFrame({
+    'Feature': features_alt,
+    'Coefficient': model_alt.coef_
+})
+print(f'Intercept: {model.intercept_:.4f}')
+print(coefficients_alt)
+
+r2_alt = r2_score(y_test, y_pred_alt)
+rmse_alt = np.sqrt(mean_squared_error(y_test, y_pred_alt))
+mae_alt = mean_absolute_error(y_test, y_pred_alt)
+
+print(f'R²: {r2_alt:.4f}')
+print(f'RMSE: {rmse_alt:.4f}')
+print(f'MAE: {mae_alt:.4f}')
+```
+
+#### Interpretation
+The alternative model that includes the lagged gold return feature shows no improvement in predictive performance compared to the baseline model. The R² value remains low (R² = 0.069), indicating that the model still explains only a small portion of the variance in gold returns. The coefficient of gold_return_lag1 is close to zero (beta_4 = -0.029) meaning this lag term adds almost no predictive information. This suggests gold returns in current sample have no momentum, which is consistent with the Efficient Market Hypothesis (EMH) that gold market is a weak-form efficient market or it follows the Random Walk Hypothesis (RWH), meaning market prices evolve randomly, making them impossible to predict based on past trends. Notably, Collins et al. (2015) find that the probability of rejecting the weak-form efficiency is higher in emerging gold markets than developed ones. Maybe differentiate between developed and emerging markets can be a future direction for improving the model. 
+
+## 1.6 Discussion
+
+The low R² of 7.1% in baseline model and weak correlations between predictors and gold returns suggest gold returns are largely unpredictable from macroeconomic indicators alone. This is consistent with the Efficient Market Hypothesis, which suggests that publicly available information is already reflected in prices. 
+
+Among all predictors, real yield has the strongest relationship with gold returns with beta coefficient of 0.978. However, this result is inconsistent with the theoretical expectation of a negative relationship. This could be due to the mean reversion tendency of real yields, where elevated real yields may signal a downturn in bond yields next month, and it will be followed by a rebound in gold returns. The alternative model with lagged returns does not improve predictive power (R² = 6.9%), suggesting that gold returns do not exhibit strong autocorrelation, which is consistent with the Random Walk Hypothesis.
+
+In terms of modelling strategy, I chose linear regression for baseline and alternative models because the outcome variable is continuous and linear regression provides an interpretable framework to understand the relationship between predictors and gold returns. However, the linear regression model relies on several assumptions that may not hold in this context. For example, the assumption of homoskedasticity may be violated due to the financial crisis and COVID-19 pandemic. Similarly, the train-test split is done chronologically to prevent data leakage, but due to COVID-19 pandemic and the Russia-Ukraine war, the test set is 2022-2026, which may have different dynamics than the training period (2006-2021). This could lead to poor out-of-sample performance. A time-series cross-validation would be more robust.
+
+In future work, I could consider using more sophisticated models (e.g., ARCH or GARCH for volatility, or machine learning models) that can better capture the complex dynamics of gold returns. Incorporating alternative data sources such as central bank gold purchases or news-based sentiment indices — motivated by theories such as the Safe Haven Theory (Baur & Lucey, 2010) — may also improve predictive performance."
+
+# Part 2: Sovereign Credit Ratings
+
+## 2.1 Load and inspect the data
+```{python}
+ratings = pd.read_csv('/Users/leolyu/Desktop/大三/DS202/Summative 1/Raw data/sovereign_ratings_data.csv')
+print(ratings.shape)
+ratings.head()
+ratings.info()
+ratings['rating'].unique()
+```
+
+## 2.2 Outcome Construction and Panel Alignment 
+
+### 2.2.1 Construct a binary variable is_ig
+Only countires with sovereign rating higher than BBB- are classified as investment grade (IG). We use the `isin()` function to check if each rating is in the list of IG ratings, and then convert the resulting boolean values to integers (1 for IG, 0 for non-IG) using `astype(int)`.
+```{python}
+ig_ratings = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 
+              'BBB+', 'BBB', 'BBB-']
+
+ratings['is_ig'] = ratings['rating'].isin(ig_ratings).astype(int)
+ratings['is_ig'].value_counts()
+```
+
+There is 861 IG (1) and 751 non-IG (0) observations  which is fairly balanced and suitable for logistic regression modelling.
+
+### 2.2.2 Construct the forecasting target variable
+
+The forecasting target $$\hat{y}_{i,t} = iS_{ig_{t+1}}$$ is binary indicator variable that captures whether a given country holds Investment Grade (IG) sovereign debt status in year t+1. This variable is constructed by shifting the `is_ig` column by -1 within each country group, which effectively assigns the IG status of year
+
+```{python}
+ratings['ig_target'] = ratings.groupby('country_clean')['is_ig'].shift(-1)
+ratings = ratings.dropna(subset=['ig_target']) # The last observation per country gets NaN ig_target and is dropped via dropna
+ratings[['country_clean', 'year', 'is_ig', 'ig_target']].head(20)
+```
+
+### 2.2.3 Data handling
+
+We need to check there are no non-consecutive years for any country, which would produce a NaN target variable for the next year. We can check this by calculating the year difference between consecutive rows for each country. 
+
+```{python}
+# Check the year gap for each country
+ratings['year_diff'] = ratings.groupby('country_clean')['year'].diff()
+ratings['year_diff'].value_counts()
+print(f" There are {ratings['country_clean'].nunique()} unique countries in the dataset.")
+print(ratings.shape)
+```
+
+```{python}
+# Check for any remaining missing values after dropna
+print("The missing values in each columns")
+print(ratings.isnull().sum())
+```
+
+This confirms that there are:
+
+- 125 countries in the dataset
+- 1487 rows after dropna
+- 1362 consecutive pairs = 1487 rows - 125 countries (first year of each country has no previous year) 
+
+So all countries are arranged with consecutive observations, and the final year of any country that exits the sample produces a NaN target and is dropped. This means we can proceed with the logistic regression modelling without needing to impute or drop additional rows for non-consecutive data.
+
+## 2.3 Data Exploration
+
+### 2.3.1 Examine the distribution of Fitch ratings
+
+```{python}
+rating_order = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 
+                'BBB+', 'BBB', 'BBB-', 'BB+', 'BB', 'BB-', 
+                'B+', 'B', 'B-', 'CCC+', 'CCC', 'CCC-', 'CC', 'C']
+
+rating_counts = ratings['rating'].value_counts().reindex(rating_order)
+
+plt.figure(figsize=(12, 5))
+rating_counts.plot(kind='bar')
+plt.title('Distribution of Fitch Sovereign Ratings')
+plt.xlabel('Rating')
+plt.ylabel('Count')
+plt.xticks(rotation=45)
+plt.axvline(x=9.5, color='red', linestyle='--', label='IG/Non-IG boundary')
+plt.legend()
+plt.show()
+```
+
+We can observe that ratings are broadly distributed across the scale, though there is a notable concentration at AAA, suggesting several highly-rated countries have maintained top-tier status consistently throughout the sample period. On the non-investment grade side, ratings cluster around B and B+, with very few observations at the extreme lower end (CCC, CC, C).
+
+### 2.3.2 Identify rating switches over time
+
+To identify rating switches, we can convert the categorical ratings into a numerical scale where higher numbers correspond to better ratings. Then we can calculate the year-to-year change in ratings for each country to see if there are any upgrades or downgrades.
+```{python}
+rating_map = {
+    'AAA': 21, 'AA+': 20, 'AA': 19, 'AA-': 18,
+    'A+': 17, 'A': 16, 'A-': 15,
+    'BBB+': 14, 'BBB': 13, 'BBB-': 12,
+    'BB+': 11, 'BB': 10, 'BB-': 9,
+    'B+': 8, 'B': 7, 'B-': 6,
+    'CCC+': 5, 'CCC': 4, 'CCC-': 3,
+    'CC': 2, 'C': 1}
+
+ratings['rating_numeric'] = ratings['rating'].map(rating_map)
+
+# Count the frequency of year-to-year change in ratings for all countires
+
+ratings['rating_change'] = ratings.groupby('country_clean')['rating_numeric'].diff()  
+
+print(ratings['rating_change'].value_counts().head(10))
+print(f"Upgrades: {(ratings['rating_change'] > 0).sum()}")
+print(f"Downgrades: {(ratings['rating_change'] < 0).sum()}")
+print(f"No change: {(ratings['rating_change'] == 0).sum()}")
+```
+
+Overall, rating changes occur in approximately 21% of country-year transitions, suggesting that sovereign ratings are relatively sticky. Most countries maintain the same rating from one year to the next. For the changes that do occur, there are more downgrades (158) than upgrades (125), suggesting that sovereign credit ratings are more likely to deteriorate than improve over time, which is consistent with the notion of rating agencies being more cautious in upgrading than downgrading. The most common magnitude of change is 1-notch (either +1 or -1), but some larger changes do occur, with a few instances of 2-notch and 3-notch changes and even a -6 notch change.
+
+### 2.3.3 Rating changes and IG status
+
+Only changes that cross the BBB-/BB+ boundary result in a change in IG status. To check this, we can look at rows where rating_change not equl to 0 and their is_ig stays the same.
+
+```{python}
+ratings['ig_change'] = ratings.groupby('country_clean')['is_ig'].diff()
+
+# Changes in rating and changes take place NOT in IG status
+within_category = ratings[
+    (ratings['rating_change'] != 0) & 
+    (ratings['ig_change'] == 0) &
+    (ratings['rating_change'].notna())]
+
+# Changes that Do affect IG status
+boundary_crosses = ratings[
+    (ratings['ig_change'] != 0) &
+    (ratings['ig_change'].notna())]
+
+print(f'Rating changes within same IG category: {len(within_category)}')
+print(f'Rating changes crossing IG boundary: {len(boundary_crosses)}')
+```
+
+```{python}
+# Example of boundary crossing
+boundary_crosses = ratings[
+    (ratings['ig_change'] == 1) | (ratings['ig_change'] == -1)
+][['country_clean', 'year', 'rating', 'is_ig', 'ig_change']].head(10)
+
+display(boundary_crosses)
+
+# Example of within-category changes with alphabetic order
+display(within_category[['country_clean', 'year', 'rating', 'is_ig', 'rating_change']].head(10))
+```
+
+You can see that the majority of rating changes (261/283 = 92.2%) occur within the same IG category, meaning they do not affect the investment grade status. Only about 8% of rating changes result in a change in IG status, examples include Azerbaijan (2024) upgraded  from BB+ to BBB-, and Bahrain (2016) downgraded from BBB- to BB+. This suggests that while ratings may fluctuate, they often do so without crossing the critical threshold that defines investment grade. This highlights the relative stability of sovereign credit ratings.
+
+### 2.3.4 Comparing 5 macroeconomic indicators between IG and non-IG countries
+```{python}
+# Select 6 macroeconomic indicators for comparison
+indicators = ['CC.EST', 'NY.GDP.MKTP.KD.ZG', 'BN.CAB.XOKA.GD.ZS', 'NE.TRD.GNFS.ZS', 'GGXWDG_NGDP', 'PCPI']
+
+ratings.groupby('is_ig')[indicators].mean().round(2)
+```
+
+#### Interpretation: 
+
+- Control of Corruption (CC.EST) is higher on average for IG countries (0.78) compared to non-IG countries (-0.42), suggesting that better governance and lower corruption are associated with better credit ratings.
+- GDP growth (NY.GDP.MKTP.KD.ZG) is suprisingly similar on average for IG countries (2.68%) compared to non-IG countries (2.63%), suggesting that economic performance is loosely associated with better credit ratings.
+- Current account balance (BN.CAB.XOKA.GD.ZS) is more negative on average for non-IG countries (-3.83%) compared to IG countries (2.35%), which may reflect that non-IG countries are more likely to run current account deficits due to poor management of national fiances and too much income outflow or foreign debt, which can lead to higher credit risk.
+- Trade openness (NE.TRD.GNFS.ZS) is higher on average for IG countries (110.38%) compared to non-IG countries (81.36%), suggesting that more open economies tend to have better credit ratings.
+- Government debt (GGXWDG_NGDP) is lower on average for IG countries (58.12%) compared to non-IG countries (67.13%), which may reflect that IG countries have accrued less debt to credit markets and can better manage their fiscal positions.
+- Inflation (PCPI) is astronomically large for both IG (93,535,725,656.03) and non-IG countires (533,242,451,804.35). This is likely due to the presence of extreme outliers, such as Venezuela or Zimbabwe, which have hyperinflation that skews the avarege. Median here is a more robust measure of central tendency for inflation.
+
+```{python}
+ratings.groupby('is_ig')[indicators].median().round(2)
+```
+
+- Inflation (PCPI) median is much more reasonable for both IG (103.48) and non-IG countires (111.38)
+
+### 2.3.5 Visualise the distribution of control of corruption (CC.EST) and Current account balance (BN.CAB.XOKA.GD.ZS) for IG vs non-IG countries
+
+```{python}
+ratings['IG Status'] = ratings['is_ig'].map({1: 'Investment Grade', 0: 'Non-Investment Grade'})
+
+plt.figure(figsize=(10, 6))
+sns.scatterplot(data=ratings, 
+                x='CC.EST', 
+                y='BN.CAB.XOKA.GD.ZS', 
+                hue='IG Status',
+                palette='coolwarm')
+plt.title('Control of Corruption vs Current Account Balance, coloured by IG status')
+plt.xlabel('Control of Corruption (-2.5 = weak, 2.5 = strong)')
+plt.ylabel('Current account balance (% of GDP)')
+plt.axhline(0, color='black', linestyle='--', linewidth=0.8)
+plt.show()
+```
+
+#### Interpretation:
+From the scatter plot, we can see that Investment Grade countries (in blue) tend to cluster towards higher values of Control of Corruption and more positive Current Account Balances, while Non-Investment Grade countries (in orange) are more spread out but generally have lower Control of Corruption values and more negative current account balances. This is because better governance and lower corruption can lead to more stable economic policies and stronger institutions, which in turn can improve a country's creditworthiness. Additionally, countries with positive current account balances may be seen as more financially stable and less reliant on external financing, which can also contribute to higher credit ratings. However, there is considerable overlap between the two groups in the middle of the chart, suggesting that no single indicator is sufficient to fully separate IG from non-IG countries — a multivariate modelling approach is therefore warranted. 
+
+#### Feature selection for modelling should be based on both theoretical relevance and empirical discrimination power:
+
+Among all the features, Control of Corruption appears to be a particularly strong discriminator between IG and non-IG countries. Higher control of corruption indicates better governance quality, meaning more investors would likely view these markets as stable environments for capital allocation. Trade openness is also an important factor to consider in the modeling stage, given its significant variance between IG and non-IG countries and its theoretical relevance to creditworthiness. Finally, we can also see some outliers with very negative current account balances (e.g., around -40% of GDP), which may be worth investigating further as they could represent countries with significant financial vulnerabilities. Under these 3 predictors, we get a good balance from one governance indicator (CC.EST), one economic performance indicator (current account balance) and one global integration indicator (trade openness), which also naturally reduce the risk of multicollinearity in the model.
+
+## 2.4 Modelling
+
+### 2.4.1 Missing data handling, feature scaling and train-test split
+
+#### Check if missingness is clustered at start or random
+
+Before train/test split, we need to check the missing data pattern for the three features (CC.EST, NE.TRD.GNFS.ZS, BN.CAB.XOKA.GD.ZS) to determine how to handle them. If the missingness is clustered at the start of the sample, it may be due to data availability issues and we can consider dropping those early rows. If the missingness is random, we may need to impute the missing values using methods such as mean imputation or regression imputation.
+
+```{python}
+# Missingness in Control of Corruption (CC.EST)
+ratings[ratings['CC.EST'].isna()]['year'].value_counts().sort_index()
+```
+```{python}
+# Missingness in Trade openness (NE.TRD.GNFS.ZS)
+ratings[ratings['NE.TRD.GNFS.ZS'].isna()]['year'].value_counts().sort_index()
+```
+```{python}
+# Missingness in Current account balance (BN.CAB.XOKA.GD.ZS)
+ratings[ratings['BN.CAB.XOKA.GD.ZS'].isna()]['year'].value_counts().sort_index()
+```
+
+Missing values are concentrated in 2024 (125 out of 140 for CC.EST, 125/173 for current account balance, 125/195 for trade openness), likely due to delayed data release from the World Bank. As this constitutes MNAR missingness, 2024 rows are dropped entirely. Remaining missing values (2012–2023) are small in number and imputed with the column mean for simplicity, as they are likely MAR missingness due to random reporting issues. Imputation will be done after train-test split to prevent data leakage. 
+
+```{python}
+# Drop 2024 data
+ratings = ratings[ratings['year'] != 2024]
+
+# Recheck the year distribution after dropping 2024
+ratings.groupby('year').size()
+```
+
+A time-based split is appropriate for this panel data to prevent data leakage. We will use the first 80% of the time period for training and the last 20% for testing. To determine the cutoff year, we can check the minimum and maximum years in the dataset.
+
+```{python}
+print(ratings['year'].min())
+print(ratings['year'].max())
+```
+
+The dataset covers the period from 2012 to 2023, which covers 12 years, the 80% of 12 years is around 10 years, so 2012 + 10 = 2022 as the cutoff line for train-test split. We will train the model on data from 2012 to 2021, and test it on data from 2022 to 2023.
+
+```{python}
+# Split full dataframe
+train_p2 = ratings[ratings['year'] < 2022]
+test_p2 = ratings[ratings['year'] >= 2022]
+
+# Define features and target
+features_p2 = ['CC.EST', 'NE.TRD.GNFS.ZS', 'BN.CAB.XOKA.GD.ZS']
+
+# Part 2 specific names
+X_train_p2 = train_p2[features_p2]
+y_train_p2 = train_p2['ig_target']
+X_test_p2 = test_p2[features_p2]
+y_test_p2 = test_p2['ig_target']
+
+# Impute
+from sklearn.impute import SimpleImputer
+imputer_p2 = SimpleImputer(strategy='mean')
+X_train_p2 = imputer_p2.fit_transform(X_train_p2)
+X_test_p2 = imputer_p2.transform(X_test_p2)
+```
+
+Before fitting the logistic regression model, we will scale the features using StandardScaler to ensure that they are on the same scale. The three features we use have different units and ranges:
+
+- CC.EST ranges from -1.5 to 2.5
+- NE.TRD.GNFS.ZS ranges from ~50 to 200+
+- BN.CAB.XOKA.GD.ZS ranges from -40 to +45
+
+Without scaling, the logistic regression solver (gradient descent) takes much longer to converge because features with larger scales dominate the optimization. Scaling puts all features on equal footing with mean=0, std=1.
+
+```{python}
+# Scale
+scaler_p2 = StandardScaler()
+X_train_p2_scaled = scaler_p2.fit_transform(X_train_p2)
+X_test_p2_scaled = scaler_p2.transform(X_test_p2)
+
+# Verify no missing values remain in imputed data
+print("Missing values in training set:", np.isnan(X_train_p2).sum())
+print("Missing values in test set:", np.isnan(X_test_p2).sum())
+```
+
+### 2.4.2 Baseline Model: Logistic Regression
+
+Logistic regression is an appropriate choice for the baseline model because the outcome variable (ig_target) is binary, indicating whether a country will be investment grade (1) or non-investment grade (0) in the next year. Logistic regression starts exactly as linear regression with a linear combination of the predictors, but then applies a sigmoid function to convert the output into a probability between 0 and 1. Finally, a decision rule is applied to classify the outcome based on a threshold (commonly 0.5). The mathematical formulation of logistic regression can be expressed as follows:
+
+#### Mathematical formulation of logistic regression:
+**Step 1 — Linear combination:**
+
+$$z = \beta_0 + \beta_1 \cdot \text{CC.EST} + \beta_2 \cdot \text{TradeOpenness} + \beta_3 \cdot \text{CurrentAccount}$$
+
+**Step 2 — Sigmoid function:**
+
+$$P(ig\_target_{t+1} = 1) = \frac{1}{1 + e^{-z}}$$
+
+**Step 3 — Decision rule:**
+
+$$\hat{y} = \begin{cases} 1 & \text{if } P \geq 0.5 \\ 0 & \text{if } P < 0.5 \end{cases}$$
+
+
+#### Fit logistic regression model using statsmodels
+```{python}
+# Add constant (intercept) term for statsmodels
+X_train_sm = sm.add_constant(X_train_p2_scaled)
+X_test_sm = sm.add_constant(X_test_p2_scaled)
+
+# Fit logistic regression
+logit_model = sm.Logit(y_train_p2, X_train_sm).fit()
+
+# Print summary
+print(logit_model.summary())
+```
+
+#### Interpretation of logistic regression results
+
+The pseudo R^2 = 0.3967 suggests that the model explains about 40% of the variance in the outcome variable, which is a moderate level of explanatory power for a logistic regression model. The coefficients indicate the direction and strength of the relationship between each predictor and the likelihood of being IG next year. For example, the positive coefficient for CC.EST ($\beta_1$ = 1.881, p<0.001) suggests that higher control of corruption is associated with a higher likelihood of being IG, while the small, negative, and statistical insignificant coefficient for NE.TRD.GNFS.ZS ($\beta_2$ = -0.225, p=0.055) suggests that trade openness may not be a primary differentiator for Investment Grade status within this specific sample. The coefficient for BN.CAB.XOKA.GD.ZS ($\beta_3$ = 1.389, p<0.001) is positive and statistically significant, suggesting that current account balance have a strong relationship with IG status in this model.
+
+#### Evaluation of model performance
+```{python}
+from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, classification_report, ConfusionMatrixDisplay
+
+# Get predictions
+y_pred = logit_model.predict(X_test_sm) > 0.5
+
+print(f'Accuracy: {accuracy_score(y_test_p2, y_pred):.4f}')
+print(f'ROC-AUC: {roc_auc_score(y_test_p2, logit_model.predict(X_test_sm)):.4f}')
+print(confusion_matrix(y_test_p2, y_pred))
+# Visualize confusion matrix
+cm = confusion_matrix(y_test_p2, y_pred)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, 
+                               display_labels=['Non-IG', 'IG'])
+disp.plot(cmap='Blues')
+plt.title('Confusion Matrix: Baseline Logistic Regression')
+plt.show()
+
+print(classification_report(y_test_p2, y_pred))
+```
+
+The logistic model I build could achieve an accuracy of 0.76, which means it correctly classifies 76% of the test observations as IG or non-IG. The ROC-AUC of 0.84 indicates good discriminative ability, it means there is an 84% probability that the model will rank a randomly chosen IG country higher (more likely to be IG) than a randomly chosen non-IG country. In the context of sovereign credit ratings, false positives (incorrectly classifying non-IG countries as IG) are particularly costly, as investors may inadvertently hold higher-risk assets than intended. The model produces 32 false positives compared to 26 false negatives, suggesting a slight tendency to overrate countries.
+
+Since the F1-score is the harmonic mean of Precision and Recall, it provides a balance between the two metrics. The F1-score for IG class is 0.76, which indicates a good balance between precision (0.75) and recall (0.78). For the non-IG class, the F1-score is the same (0.76) but with a higher precision (0.78) and lower recall (0.74), suggesting that the model perform more or less equally well for both classes.
+
+#### Precision-Recall curve and threshold table
+```{python}
+from sklearn.metrics import precision_recall_curve, PrecisionRecallDisplay
+
+# Get predicted probabilities
+y_pred_proba = logit_model.predict(X_test_sm)
+
+# Precision-Recall curve
+precision, recall, thresholds = precision_recall_curve(y_test_p2, y_pred_proba)
+
+# The threshold table 
+th_list = np.arange(0.1, 0.9, 0.1)
+results = []
+for th in th_list:
+    y_pred_th = (y_pred_proba > th).astype(int)
+    from sklearn.metrics import precision_score, recall_score
+    results.append({
+        'Threshold': round(th, 1),
+        'Precision': round(precision_score(y_test_p2, y_pred_th), 3),
+        'Recall': round(recall_score(y_test_p2, y_pred_th), 3)
+    })
+display(pd.DataFrame(results))
+
+# Plot
+plt.figure(figsize=(8, 6))
+plt.plot(recall, precision, marker='.', label='Logistic Regression')
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.title('Precision-Recall Curve: Baseline Logistic Regression')
+plt.legend()
+plt.grid(True)
+plt.show()
+```
+
+We previously used a threshold of 0.5 to classify predictions, but the precision-recall curve and threshold table allow us to evaluate how different thresholds would affect the balance between precision and recall. For example, if we increase the threshold to 0.7, we can see that precision increases to 0.82 but recall decreases to 0.70, meaning we would have fewer false positives but more false negatives. Conversely, if we decrease the threshold to 0.3, precision decreases to 0.68 but recall increases to 0.85, meaning we would catch more true IG countries but also have more false positives. 
+
+Given that false positives carry greater economic risk in credit rating contexts, as investors may inadvertently hold speculative-grade assets, a higher threshold of 0.6 ~ 0.7 may be preferable despite the reduction in recall. At threshold 0.6, precision rises to 0.8 while recall remains acceptable at 0.74, providing a better balance for practical applications.Ultimately, the choice of threshold should be guided by the specific risk tolerance and investment objectives of the stakeholders using the model.
+
+### 2.4.3 Alternative model: L1 (Lasso) Regularization Logistic Regression
+
+In the baseline model, the feature selection choice was based on exploratory findings and theortical frameworks, such intuitive methods often lack the systematic robustness required for rigorous model construction. Lasso logistic regression serves as a mathematically rigorous alternative to standard logistic regression by incorporating an L1 penalty, which facilitates automatic feature selection by shrinking the coefficients of less impactful variables to exactly zero. Moverover, lasso is essential for mitigating overfitting, especially when navigating a high-dimensional feature space, and represents a significant structural improvement over a baseline model by systematically filtering out noise to reveal the most critical drivers of creditworthiness. In the context of sovereign credit ratings, where we have 11 macroeconomic predictors, lasso can significantly enhance our feature selection choice and predictive performance. The mathematical formulation of lasso logistic regression can be expressed as follows:
+
+$$\min_{\beta} \left[ -\frac{1}{n}\sum_{i=1}^{n} \left[ y_i \log(p_i) + (1-y_i)\log(1-p_i) \right] + \lambda \sum_{j=1}^{p} |\beta_j| \right]$$
+
+Where:
+
+- $y_i$ is the true label (0 or 1)
+- $p_i = \sigma(\beta_0 + \beta_1 x_{i1} + \cdots + \beta_p x_{ip})$ is the predicted probability
+- $\lambda$ is the regularisation strength — higher values shrink more coefficients to zero
+- $\sum_{j=1}^{p} |\beta_j|$ is the L1 penalty term
+
+This L1 term ($\lambda \sum_{j=1}^{p} |\beta_j|$) would penalise larger coefficients, effectively performing feature selection by shrinking some coefficients to zero, thus identifying the most important predictors of IG status while reducing the risk of overfitting.
+
+#### Why not Ridge (L2) regularization?
+Ridge regression (L2 regularization) adds a penalty term that is the square of the coefficients ($\lambda \sum_{j=1}^{p} \beta_j^2$), which shrinks coefficients towards zero but does not set any to exactly zero. This means that while Ridge can help with multicollinearity and reduce model complexity, it does not perform feature selection. In contrast, Lasso (L1 regularization) can shrink some coefficients to exactly zero, effectively removing those features from the model. Given that we have 11 macroeconomic predictors and we want to identify the most important ones for predicting IG status, Lasso is more appropriate for our purpose.
+
+#### Why not Random Forest or SVM?
+While Random Forest and SVM may achieve higher predictive accuracy, they produce poorly calibrated probabilities and require additional calibration procedures (e.g. Platt scaling). In contrast, logistic regression directly models probabilities via Maximum Likelihood Estimation (MLE), making it naturally well-calibrated and more suitable for contexts where probability estimates are important — such as credit rating where investors need reliable probability estimates of IG status. Moreover, logistic regression provides interpretable coefficients that can be directly linked to the odds of being IG, which is valuable for understanding the drivers of creditworthiness. Random Forest and SVM, while powerful, are often considered "black box" models that lack this level of interpretability without additional tools (e.g., SHAP values), which may not be as straightforward for stakeholders in the credit rating industry.
+
+#### Preprocessing for lasso logistic regression
+
+```{python}
+# Data cleaning
+all_features = ['CC.EST', 'GE.EST', 'RQ.EST', 'RL.EST', 
+                'NY.GDP.MKTP.KD.ZG', 'BN.CAB.XOKA.GD.ZS', 
+                'NE.TRD.GNFS.ZS', 'GGXWDG_NGDP', 'PCPI']
+
+ratings[all_features].isnull().sum()
+
+# Split
+X_train_lasso = train_p2[all_features]
+X_test_lasso = test_p2[all_features]
+
+# Impute missing values with mean
+imputer_lasso = SimpleImputer(strategy='mean')
+X_train_lasso = imputer_lasso.fit_transform(X_train_lasso) # Fit on train, transform on train
+X_test_lasso = imputer_lasso.transform(X_test_lasso) # Only transform on test to prevent data leakage
+
+# Scale
+scaler_lasso = StandardScaler()
+X_train_lasso_scaled = scaler_lasso.fit_transform(X_train_lasso)
+X_test_lasso_scaled = scaler_lasso.transform(X_test_lasso)
+```
+
+#### Fit the lasso logistic regression model
+
+Unlike the baseline model fitted using statsmodels, the Lasso model is fitted using scikit-learn's LogisticRegression with penalty='l1', as statsmodels does not natively support L1 regularisation. This means p-values and confidence intervals are not available for the Lasso model — the focus is instead on coefficient magnitude and feature selection.
+
+```{python}
+lasso_model = LogisticRegression(l1_ratio = 1, 
+                                  solver='liblinear',
+                                  C=1.0,
+                                  random_state=42,
+                                  max_iter=1000)
+lasso_model.fit(X_train_lasso_scaled, y_train_p2)
+
+# Show coefficients
+coef_df = pd.DataFrame({
+    'Feature': all_features,
+    'Coefficient': lasso_model.coef_[0]
+})
+display(coef_df)
+```
+
+```{python}
+# Cross-validation with different C values
+for C in [0.1, 0.5, 1.0, 2.0]:
+    model = LogisticRegression(l1_ratio = 1, solver='liblinear', 
+                                C=C, random_state=42)
+    model.fit(X_train_lasso_scaled, y_train_p2)
+    print(f'\nC={C}:')
+    for feat, coef in zip(all_features, model.coef_[0]):
+        print(f'{feat}: {coef:.3f}')
+```
+
+Since scikit-learn's Lasso implementation does not provide p-values or confidence intervals, we assess coefficient stability by varying the regularisation strength C across [0.1, 0.5, 1.0, 2.0]. C = 1/λ, so smaller C (0.1) means stronger regularisation — features that survive (remain non-zero) under strong regularisation are more robustly important predictors. This serves as an informal substitute for significance testing."
+
+#### Interpretation of lasso coefficients
+
+We can see that surprisingly, the coefficient for Control of Corruption (CC.EST) is very large and negative (-2.42), which is contrary to the finding in baseline. This is due to multicollinearity among the governance indicators, CC.EST, Government Effectiveness (GE.EST), Regulatory Quality (RQ.EST) and Rule of Law (RL.EST), which are all highly correlated and measure similar aspects of governance quality. The correlation matrix heatmap confirmed this: 
+
+```{python}
+# Correlation matrix for all Part 2 features
+plt.figure(figsize=(10, 8))
+sns.heatmap(ratings[all_features].corr(), 
+            annot=True, 
+            cmap='coolwarm', 
+            fmt='.2f')
+plt.title('Correlation Matrix: Part 2 Features')
+plt.tight_layout()
+plt.show()
+```
+
+- CC.EST ↔ GE.EST: 0.93
+- CC.EST ↔ RQ.EST: 0.90
+- CC.EST ↔ RL.EST: 0.95
+- GE.EST ↔ RL.EST: 0.95
+
+As a result of this multicollinearity, when Lasso tries to distribute the effect across these correlated features, it can produce unexpected sign flips and large coefficient magnitudes as it arbitrarily assigns importance to one feature over the others.
+
+To assess coefficient stability in the absence of p-values, we vary $C$ across $[0.1, 0.5, 1.0, 2.0]$, identifying Government Effectiveness, Regulatory Quality, and key macroeconomic indicators as robustly important due to their persistence at all regularization levels. In contrast, inflation (PCPI) is definitively unimportant, as it is eliminated by the L1 penalty regardless of the $C$ value, while Rule of Law (RL.EST) appears only moderately important since it drops to zero under the strictest penalty ($C=0.1$). Finally, GDP growth is categorized as weakly important, maintaining a negligible coefficient magnitude across the entire range of $C$ values, suggesting it lacks the discriminatory power of structural fiscal and governance levels.
+
+For specific macroeconomic indicators analysis:
+
+- The coefficients for current account balance remain positive and significant across all C-value, suggesting it is a robust predictors of IG, consistent with baseline model.
+
+- General Government Debt remain negative and significant across all C-value. This means that higher debt-to-GDP are associated with lower likelihood of being IG, because it could exponentially increase the perceived risk of default. This is the "fiscal ceiling" that often keeps emerging markets in the non-IG category. 
+
+- Trade openness has a negative coefficient across all C-value, suggesting that more open economies are less likely to be IG. This often suggests "External Vulnerability." Countries that are too open may be overly sensitive to global commodity price crashes or supply chain disruptions, which creates the economic volatility that rating agencies dislike. Those results reinforce the idea that economic performance and global integration are important factors in sovereign credit ratings.
+
+Additionally, the large coefficient magnitudes suggest potential near-perfect separation, where governance indicators almost perfectly distinguish IG from non-IG countries. This is precisely why Lasso regularisation is valuable — the L1 penalty prevents coefficients from growing toward ±∞, stabilising the estimation.
+
+#### Evaluation of lasso model performance
+```{python}
+# Get predictions
+y_pred_lasso = lasso_model.predict(X_test_lasso_scaled)
+y_pred_lasso_proba = lasso_model.predict_proba(X_test_lasso_scaled)[:, 1]
+
+# Performance metrics
+print(f'Accuracy: {accuracy_score(y_test_p2, y_pred_lasso):.4f}')
+print(f'ROC-AUC: {roc_auc_score(y_test_p2, y_pred_lasso_proba):.4f}')
+print(classification_report(y_test_p2, y_pred_lasso))
+
+# Confusion matrix
+cm_lasso = confusion_matrix(y_test_p2, y_pred_lasso)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm_lasso,
+                               display_labels=['Non-IG', 'IG'])
+disp.plot(cmap='Blues')
+plt.title('Confusion Matrix: Lasso Logistic Regression')
+plt.show()
+```
+
+#### Visualise the comparision between baseline and lasso model
+
+```{python}
+from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, confusion_matrix
+
+# Baseline metrics
+cm_baseline = confusion_matrix(y_test_p2, y_pred)
+baseline_fp = cm_baseline[0][1]
+baseline_fn = cm_baseline[1][0]
+
+# Lasso metrics  
+cm_lasso = confusion_matrix(y_test_p2, y_pred_lasso)
+lasso_fp = cm_lasso[0][1]
+lasso_fn = cm_lasso[1][0]
+
+comparison = pd.DataFrame({
+    'Metric': ['Accuracy', 'ROC-AUC', 'F1-Score', 'False Positives', 'False Negatives'],
+    'Baseline': [
+        round(accuracy_score(y_test_p2, y_pred), 4),
+        round(roc_auc_score(y_test_p2, logit_model.predict(X_test_sm)), 4),
+        round(f1_score(y_test_p2, y_pred), 4),
+        baseline_fp,
+        baseline_fn
+    ],
+    'Lasso (C = 1.0)': [
+        round(accuracy_score(y_test_p2, y_pred_lasso), 4),
+        round(roc_auc_score(y_test_p2, y_pred_lasso_proba), 4),
+        round(f1_score(y_test_p2, y_pred_lasso), 4),
+        lasso_fp,
+        lasso_fn
+    ]
+})
+display(comparison)
+```
+
+The jump in ROC-AUC to 0.9369 indicates that the Lasso model is exceptionally capable of distinguishing between Investment Grade (IG) and non-IG sovereigns. The +10.7% increase in accuracy also support the that the degree of closeness between the predictions made by the alternative model and the actual category is higher.This suggests that the $L1$ penalty successfully filtered out the "noise" that was previously diluting the baseline's predictive signals. 
+
+By comparing the number of false positives and false negatives between two models, we can see that the alternative model's ability to slash False Positives by more than half is an outstanding improvement (FP: 32 -> 15, FN: 26 -> 17). Both false positives and false negatives decreased, suggesting the additional features genuinely improved discrimination in both directions. This is particularly relevant for financial risk management, as it reduces the likelihood of incorrectly labelling a high-risk sovereign as safe, potentially mitigating investor's capital volatility.
+
+## 2.5 Discussion
+
+The Lasso model demonstrates that sovereign Investment Grade (IG) status is highly predictable, achieving an ROC-AUC of 0.937. This indicates a significantly more robust predictive signal than the baseline model. Sovereign credit status appears inherently more predictable than assets like gold returns because IG ratings are anchored in structural macroeconomic and institutional "levels" which evolve slowly. In contrast, commodity prices are often driven by volatile, speculative market sentiment that lacks the same underlying structural stability.
+
+While the current model performs well, macroeconomic variables alone may not be sufficient for a comprehensive risk assessment. The model successfully identifies fiscal drivers, but it currently lacks data on geopolitical events, internal political instability, and real-time market sentiment. These factors can often serve as leading indicators for downgrades that occur before they are reflected in annual fiscal datasets.
+
+A critical methodological limitation is the treatment of panel observations as independent. By treating each year for a country as a separate data point, the model ignores autocorrelation—the fact that a country’s status in one year is highly dependent on its status in the previous year. This violation of independence can lead to over-optimistic results, as the model essentially sees "near-duplicate" versions of the same country's profile.
+
+Additional limitations include multicollinearity among governance indicators, which resulted in unexpected coefficient sign flips, and the limited test set consisting of only two years. Future extensions could address these by using panel-aware models (fixed effects) to account for country-specific traits and time-series cross-validation to respect the temporal order of data. Integrating political risk indices or credit default swap (CDS) spreads would also provide a more holistic view of sovereign creditworthiness.
+
+## 🤖 AI Tool Usage Declaration
+
+In completing this assignment, I used the following AI tools:
+
+- **Claude (Anthropic)** — Used throughout the assignment for guided learning, 
+debugging code errors, understanding concepts (e.g. Lasso regularisation, 
+precision-recall tradeoff), and proofreading markdown. Claude was used in a 
+tutor capacity — it asked guiding questions rather than providing direct answers. 
+All written interpretations, modelling decisions, and analytical conclusions 
+are my own.
